@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.log
+logs/
+.ipynb_checkpoints/
+minio_data/
+# Postgres & Docker runtime data
+pgdata/
+postgres-data/
+data/
+tmp/

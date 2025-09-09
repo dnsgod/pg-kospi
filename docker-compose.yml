@@ -1,0 +1,17 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: pg-kospi
+    environment:
+      POSTGRES_USER: kospi
+      POSTGRES_PASSWORD: kospi
+      POSTGRES_DB: stocks
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kospi -d stocks"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

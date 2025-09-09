@@ -1,0 +1,14 @@
+finance-datareader
+pykrx
+pandas
+numpy
+pyarrow
+fastparquet
+SQLAlchemy
+psycopg2-binary
+python-dotenv
+statsmodels
+scikit-learn
+matplotlib
+plotly
+streamlit
