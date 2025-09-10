@@ -5,10 +5,13 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import text
 from src.db.conn import get_engine
+from src.db.watchlist import add_watchlist, list_watchlist, list_watchlist_df, remove_watchlist
 
 # 1) 페이지 설정 ---------------------------------------------------------------
 st.set_page_config(page_title="KOSPI100 주가 예측 데모", layout="wide")
 st.title("📈 KOSPI100 주가 예측 데모 (PostgreSQL)")
+if "watchlist_v" not in st.session_state:
+    st.session_state["watchlist_v"] = 0
 
 # 2) DB 엔진 준비 --------------------------------------------------------------
 engine = get_engine()
@@ -19,7 +22,10 @@ def load_tickers():
     """prices 테이블에서 전체 티커 목록 조회 (5분 캐시)."""
     with engine.connect() as conn:
         df = pd.read_sql("SELECT DISTINCT ticker, name FROM prices ORDER BY ticker", conn)
-    df["display"] = df.apply(lambda r : f"{r['name']} ({r['ticker']})" if pd.notna(r['name'])and str(r['name']).strip() else r['ticker'], axis=1)
+    df["display"] = df.apply(
+        lambda r: f"{r['name']} ({r['ticker']})" if pd.notna(r['name']) and str(r['name']).strip() else r['ticker'],
+        axis=1
+    )
     return df
 
 @st.cache_data(ttl=180)
@@ -32,6 +38,12 @@ def load_prices(ticker: str) -> pd.DataFrame:
         )
     df["date"] = pd.to_datetime(df["date"])
     return df.sort_values("date")
+
+@st.cashe_data(ttl=60)
+def load_watchlist_table(version: int) -> pd.DataFrame:
+    """관심 종목 목록을 캐시로 읽는다.
+    - version: st.session_state["watchlist_v"]가 바뀌면 캐시가 새로고침됨"""
+    return list_watchlist_df()
 
 @st.cache_data(ttl=180)
 def load_predictions(ticker: str) -> pd.DataFrame:
@@ -53,10 +65,7 @@ def load_predictions(ticker: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=120)
 def load_metrics_by_ticker(ticker: str, horizon: int = 1) -> pd.DataFrame:
-    """
-    prediction_metrics 뷰에서 티커별/호라이즌별 모델 성능 로드.
-    새 스키마: mae_all, acc_all, mae_250d, acc_250d
-    """
+    """prediction_metrics 뷰에서 티커별/호라이즌별 모델 성능 로드."""
     with engine.connect() as conn:
         df = pd.read_sql(
             text("""
@@ -83,35 +92,31 @@ def load_leaderboard(horizon: int = 1) -> pd.DataFrame:
         )
     return df
 
-
 def make_target_date_index(prices_df: pd.DataFrame) -> pd.DataFrame:
     """as-of 예측을 다음 거래일(target_date)로 이동시키는 인덱스 테이블."""
     seq = prices_df[["date"]].reset_index(drop=True).copy()
     seq["target_date"] = seq["date"].shift(-1)
     return seq.rename(columns={"date": "date"})
 
-
 # 4) 탭 구성 -------------------------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs(["📈 티커별 성능", "🏆 모델 리더보드", "🔬 모델 비교", "🚨 시그널 보드"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 티커별 성능", "🏆 모델 리더보드", "🔬 모델 비교", "🚨 시그널 보드", "⭐ 관심 종목"])
+
 show_recent = st.toggle("최근 1개월 데이터만 보기", value=True)
 
 # ----------------------------- 탭 1: 티커별 성능 ------------------------------
 with tab1:
-    # 4-1) 티커 선택
     tickers = load_tickers()
     label_ticker = dict(zip(tickers["display"], tickers["ticker"]))
     label = st.selectbox("종목 선택", options=list(label_ticker.keys()))
     t = label_ticker[label]
     st.subheader(f"선택된 종목: {label}")
 
-    # 4-2) 실제 종가
     df_price = load_prices(t)
     if show_recent:
         df_price = df_price.tail(22)
     st.subheader("실제 종가")
     st.line_chart(df_price.set_index("date")[["close"]])
 
-    # 4-3) 예측 로드 및 as-of → target_date 정렬
     pred = load_predictions(t)
     if pred.empty:
         st.info("예측 데이터가 없습니다. Day2/Day3 파이프라인을 먼저 실행하세요.")
@@ -121,12 +126,10 @@ with tab1:
     pred = pred.merge(seq, on="date", how="left").dropna(subset=["target_date"])
     pred["target_date"] = pd.to_datetime(pred["target_date"])
 
-    # 4-4) 모델 선택 멀티셀렉트 (기본: 앙상블 우선)
     all_models = sorted(pred["model_name"].unique().tolist())
     default_models = [m for m in all_models if m.startswith("safe_ens_")] or all_models
     sel_models = st.multiselect("표시할 모델 선택", all_models, default=default_models)
 
-    # 4-5) 피벗 → 실제 vs 예측 오버레이
     pvt = (
         pred[pred["model_name"].isin(sel_models)]
         .pivot_table(index="target_date", columns="model_name", values="y_pred", aggfunc="last")
@@ -137,37 +140,36 @@ with tab1:
     st.subheader("실제 vs 예측 (D+1, 거래일 기준)")
     st.line_chart(viz)
 
-    # 4-6) 지표 표 (티커별)
     metrics = load_metrics_by_ticker(t)
-    st.subheader("티커별 지표 (n / MAE / RMSE / 방향정확도)")
+    st.subheader("티커별 지표 (MAE / ACC, 최근 250일 보정 포함)")
     st.dataframe(metrics, use_container_width=True)
 
-    # 4-7) CSV 다운로드 (티커별 지표 & 시계열)
     c1, c2 = st.columns(2)
     with c1:
         metrics_out = metrics.copy()
         metrics_out.insert(0, "company", label)
         st.download_button(
-            "지표 CSV 다운로드", metrics_out.to_csv(index=False).encode("utf-8"),
+            "CSV 다운로드: 티커별 지표",
+            metrics_out.to_csv(index=False).encode("utf-8"),
             file_name=f"metrics_{t}.csv", mime="text/csv"
         )
     with c2:
         out = viz.reset_index().rename(columns={"index": "date"})
         out.insert(0, "company", label)
         st.download_button(
-            "시계열 CSV 다운로드 (실제+예측)", out.to_csv(index=False).encode("utf-8"),
+            "CSV 다운로드: 실제+예측 시계열",
+            out.to_csv(index=False).encode("utf-8"),
             file_name=f"series_{t}.csv", mime="text/csv"
         )
 
 # --------------------------- 탭 2: 모델 리더보드 ------------------------------
 with tab2:
     st.subheader("모델별 리더보드 (전체/최근250)")
-    hz = st.selectbox("호라이즌", [1], index=0)  # 필요 시 동적 로드로 확장
+    hz = st.selectbox("호라이즌", [1], index=0)
     leaderboard = load_leaderboard(hz)
 
     st.dataframe(leaderboard, use_container_width=True)
 
-    # 막대그래프는 최근 250일 기준이 있으면 그걸 우선
     chart_df = leaderboard.set_index("model_name")[["mae_250d"]].rename(columns={"mae_250d":"MAE(250d)"})
     if chart_df["MAE(250d)"].isna().all():
         chart_df = leaderboard.set_index("model_name")[["mae_all"]].rename(columns={"mae_all":"MAE(all)"})
@@ -175,7 +177,8 @@ with tab2:
     st.bar_chart(chart_df)
 
     st.download_button(
-        "리더보드 CSV 다운로드", leaderboard.to_csv(index=False).encode("utf-8"),
+        "CSV 다운로드: 리더보드",
+        leaderboard.to_csv(index=False).encode("utf-8"),
         file_name=f"prediction_leaderboard_h{hz}.csv", mime="text/csv"
     )
 
@@ -186,7 +189,6 @@ with tab3:
     label_ticker = dict(zip(tickers["display"], tickers["ticker"]))
     t = st.selectbox("티커", options=list(label_ticker.values()))
     hz = 1
-    # 평가 시계열 가져오기
     df = pd.read_sql(
         text("""
             WITH filtered AS (
@@ -208,7 +210,8 @@ with tab3:
         st.line_chart(pvt)
 
         st.download_button(
-            "모델 비교 CSV 다운로드", df.to_csv(index=False).encode("utf-8"),
+            "CSV 다운로드: 모델 비교",
+            df.to_csv(index=False).encode("utf-8"),
             file_name=f"model_compare_{t}.csv", mime="text/csv"
         )
 
@@ -231,6 +234,7 @@ with tab4:
 
     if not df_sig.empty:
         st.download_button(
-            "시그널 CSV 다운로드", df_sig.to_csv(index=False).encode("utf-8"),
+            "CSV 다운로드: 시그널",
+            df_sig.to_csv(index=False).encode("utf-8"),
             file_name=f"signals_h{hz}_th{theta}.csv", mime="text/csv"
         )

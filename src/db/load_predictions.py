@@ -5,11 +5,12 @@ from .conn import get_engine
 
 def upsert_predictions(df: pd.DataFrame, chunk = 5000):
     """
-    df columns: ['date', 'ticker', 'model_name', 'horizon', 'y_pred']"""
-
+    df columns: ['date', 'ticker', 'model_name', 'horizon', 'y_pred']
+    """
     if df is None or df.empty:
         print("No data to upsert.")
         return
+
     df = df.copy()
     df['date'] = pd.to_datetime(df['date']).dt.date
 
@@ -24,6 +25,7 @@ def upsert_predictions(df: pd.DataFrame, chunk = 5000):
                 continue
             recs = part.to_dict(orient='records')
             stmt = insert(preds).values(recs)
+            # PK와 동일한 순서로 지정: (date, ticker, model_name, horizon)
             stmt = stmt.on_conflict_do_update(
                 index_elements=['date', 'ticker', 'model_name', 'horizon'],
                 set_={'y_pred': stmt.excluded.y_pred}

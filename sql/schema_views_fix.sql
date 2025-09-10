@@ -1,6 +1,6 @@
--- ==== FIX VIEWS to use dir_correct instead of dir_corr =================
+-- ==== Views Fix/Refresh (2025-09-10, idempotent) =====================
 
--- 1) 최근 250일 날짜 세트 (재생성해도 안전)
+-- 1) last250_dates
 CREATE OR REPLACE VIEW public.last250_dates AS
 WITH distinct_days AS (
   SELECT DISTINCT ticker, date
@@ -17,9 +17,9 @@ SELECT ticker, date
 FROM ranked
 WHERE rn <= 250;
 
--- 2) prediction_metrics : horizon 포함 + dir_correct 사용
+-- 2) prediction_metrics (dir_correct 표준)
 DROP VIEW IF EXISTS public.prediction_metrics CASCADE;
-CREATE OR REPLACE VIEW public.prediction_metrics AS
+CREATE VIEW public.prediction_metrics AS
 SELECT
   e.ticker,
   e.model_name,
@@ -37,9 +37,9 @@ LEFT JOIN public.last250_dates l
   ON l.ticker = e.ticker AND l.date = e.date
 GROUP BY e.ticker, e.model_name, e.horizon;
 
--- 3) prediction_leaderboard : dir_correct 사용
+-- 3) prediction_leaderboard (dir_correct 표준)
 DROP VIEW IF EXISTS public.prediction_leaderboard CASCADE;
-CREATE OR REPLACE VIEW public.prediction_leaderboard AS
+CREATE VIEW public.prediction_leaderboard AS
 WITH base AS (
   SELECT
     e.model_name,
@@ -65,9 +65,9 @@ SELECT
 FROM base
 GROUP BY model_name, horizon;
 
--- 4) signals_view : e(alias) 조인 명시 + y_true 기준 간단 변화율
+-- 4) signals_view (조인 버전)
 DROP VIEW IF EXISTS public.signals_view CASCADE;
-CREATE OR REPLACE VIEW public.signals_view AS
+CREATE VIEW public.signals_view AS
 SELECT
   p.ticker,
   p.date,
@@ -87,4 +87,4 @@ JOIN public.prediction_eval e
  AND e.horizon    = p.horizon
 WHERE p.model_name LIKE 'safe_%';
 
--- ==== END FIX ==========================================================
+-- ==== END FIX =========================================================

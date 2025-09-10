@@ -1,12 +1,15 @@
 -- =====================================================================
--- KOSPI100 Demo DB Schema (Consolidated)
--- Tables, Indexes, and Views used by the Streamlit app & pipelines
--- Date: 2025-09-09
--- Notes:
---  - Uses dir_corr (BOOLEAN) in prediction_eval for directional accuracy
---  - Provides reusable views: last250_dates, prediction_metrics,
---    prediction_leaderboard, signals_view
+-- KOSPI100 Demo DB Schema (Unified, 2025-09-10)
+--  - predictions PK 정렬: (date, ticker, model_name, horizon) ← 코드와 일치
+--  - prediction_eval 방향정확도 컬럼: dir_correct BOOLEAN 로 표준화
+--  - signals_view: predictions↔prediction_eval 조인 방식으로 단순/명료화
+--  - watchlist 테이블(데모용 단일 사용자) 포함
 -- =====================================================================
+
+-- -----------------------------
+-- 0) Extensions (optional)
+-- -----------------------------
+-- CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- -----------------------------
 -- 1) Core Tables
@@ -31,7 +34,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     model_name  text    NOT NULL,
     horizon     int     NOT NULL,
     y_pred      numeric NOT NULL,
-    PRIMARY KEY (date, model_name, horizon, ticker)
+    PRIMARY KEY (date, ticker, model_name, horizon)  -- ← PK 순서 통일
 );
 
 CREATE TABLE IF NOT EXISTS prediction_eval (
@@ -42,32 +45,39 @@ CREATE TABLE IF NOT EXISTS prediction_eval (
     y_pred      numeric NOT NULL,
     y_true      numeric NOT NULL,   -- next trading day's close
     abs_err     numeric NOT NULL,
-    dir_corr    boolean NOT NULL,   -- directional accuracy
+    dir_correct boolean NOT NULL,   -- ← 표준화
     PRIMARY KEY (date, ticker, model_name, horizon)
+);
+
+-- 데모 버전: 단일 사용자 가정
+CREATE TABLE IF NOT EXISTS watchlist (
+    ticker     varchar(20) PRIMARY KEY,
+    note       text,
+    created_at timestamp DEFAULT now()
 );
 
 -- -----------------------------
 -- 2) Helpful Indexes
 -- -----------------------------
-CREATE INDEX IF NOT EXISTS idx_prices_date      ON prices(date);
-CREATE INDEX IF NOT EXISTS idx_prices_ticker    ON prices(ticker);
-CREATE INDEX IF NOT EXISTS idx_predictions_ticker_date ON predictions(ticker, date);
-CREATE INDEX IF NOT EXISTS idx_prediction_eval_ticker_date ON prediction_eval(ticker, date);
+CREATE INDEX IF NOT EXISTS idx_prices_date                   ON prices(date);
+CREATE INDEX IF NOT EXISTS idx_prices_ticker                 ON prices(ticker);
+CREATE INDEX IF NOT EXISTS idx_predictions_ticker_date       ON predictions(ticker, date);
+CREATE INDEX IF NOT EXISTS idx_prediction_eval_ticker_date   ON prediction_eval(ticker, date);
 CREATE INDEX IF NOT EXISTS ix_eval_ticker_model_horizon_date
     ON prediction_eval(ticker, model_name, horizon, date);
 
--- Clean up any legacy/typo objects (safe no-ops if absent)
-DROP INDEX IF EXISTS ix_eval_ticke_model_horizon_date;  -- typo legacy
+-- (과거 오타 인덱스 제거 - 안전한 no-op)
+DROP INDEX IF EXISTS ix_eval_ticke_model_horizon_date;
 
 -- -----------------------------
--- 3) Small Utility View(s)
+-- 3) Small Utility Views
 -- -----------------------------
 CREATE OR REPLACE VIEW latest_prices AS
 SELECT DISTINCT ON (ticker) ticker, date, close, volume
 FROM prices
 ORDER BY ticker, date DESC;
 
--- 티커별 최근 250 거래일(date) 세트
+-- 최근 250 거래일(date) 세트 (티커별)
 CREATE OR REPLACE VIEW last250_dates AS
 WITH distinct_days AS (
   SELECT DISTINCT ticker, date
@@ -85,31 +95,37 @@ FROM ranked
 WHERE rn <= 250;
 
 -- -----------------------------
--- 4) App-Facing Views (Reusable data contracts)
+-- 4) App-Facing Views
 -- -----------------------------
--- A) 티커×모델×호라이즌 성능: 전체/최근250 MAE & 방향정확도
-CREATE OR REPLACE VIEW prediction_metrics AS
+-- A) 티커×모델×호라이즌 성능 집계
+DROP VIEW IF EXISTS prediction_metrics CASCADE;
+CREATE VIEW prediction_metrics AS
 SELECT
   e.ticker,
   e.model_name,
   e.horizon,
   AVG(e.abs_err)::float AS mae_all,
-  AVG(CASE WHEN e.dir_corr THEN 1 ELSE 0 END)::float AS acc_all,
+  AVG(CASE WHEN e.dir_correct THEN 1 ELSE 0 END)::float AS acc_all,
   AVG(CASE WHEN l.date IS NOT NULL THEN e.abs_err END)::float AS mae_250d,
-  AVG(CASE WHEN l.date IS NOT NULL THEN CASE WHEN e.dir_corr THEN 1 ELSE 0 END END)::float AS acc_250d
+  AVG(
+    CASE WHEN l.date IS NOT NULL
+         THEN CASE WHEN e.dir_correct THEN 1 ELSE 0 END
+    END
+  )::float AS acc_250d
 FROM prediction_eval e
 LEFT JOIN last250_dates l
   ON l.ticker = e.ticker AND l.date = e.date
 GROUP BY e.ticker, e.model_name, e.horizon;
 
--- B) 모델 전반 성능 요약(모델×호라이즌): 전체/최근250
-CREATE OR REPLACE VIEW prediction_leaderboard AS
+-- B) 모델 전반 성능 요약(모델×호라이즌)
+DROP VIEW IF EXISTS prediction_leaderboard CASCADE;
+CREATE VIEW prediction_leaderboard AS
 WITH base AS (
   SELECT
     e.model_name,
     e.horizon,
     e.abs_err,
-    e.dir_corr,
+    e.dir_correct,
     (CASE WHEN l.date IS NOT NULL THEN 1 ELSE 0 END) AS in_250
   FROM prediction_eval e
   LEFT JOIN last250_dates l
@@ -119,73 +135,38 @@ SELECT
   model_name,
   horizon,
   AVG(abs_err)::float AS mae_all,
-  AVG(CASE WHEN dir_corr THEN 1 ELSE 0 END)::float AS acc_all,
+  AVG(CASE WHEN dir_correct THEN 1 ELSE 0 END)::float AS acc_all,
   AVG(CASE WHEN in_250 = 1 THEN abs_err END)::float AS mae_250d,
-  AVG(CASE WHEN in_250 = 1 THEN CASE WHEN dir_corr THEN 1 ELSE 0 END END)::float AS acc_250d
+  AVG(
+    CASE WHEN in_250 = 1
+         THEN CASE WHEN dir_correct THEN 1 ELSE 0 END
+    END
+  )::float AS acc_250d
 FROM base
 GROUP BY model_name, horizon;
 
--- C) 시그널 뷰: 전일 종가 대비 예측 변화율(앱에서 임계값 θ로 필터링)
-CREATE OR REPLACE VIEW signals_view AS
+-- C) 시그널 뷰: 예측 vs y_true 변화율/절대변화
+DROP VIEW IF EXISTS signals_view CASCADE;
+CREATE VIEW signals_view AS
 SELECT
   p.ticker,
   p.date,
   p.model_name,
   p.horizon,
   p.y_pred,
-  e.y_true,              -- (참고) 다음날 종가
-  -- 전일(예측 기준일) 종가: prediction_eval이 이미 prices와 매칭한 close_asof를 보유
-  -- 만약 별도 컬럼으로 저장하지 않았다면, 필요 시 prices를 조인해도 됨
-  -- 여기서는 prediction_eval의 y_true와 y_pred로 변화율을 산출하는 방식 사용
-  NULL::numeric AS close_asof,  -- 유지보수 편의용 placeholder (필요시 가격 조인으로 대체)
-  NULLIF(NULLIF(0,0),0) AS dummy_null, -- no-op (placeholder to remind maintainers)
-  CASE
-    WHEN (SELECT pe2.y_true FROM prediction_eval pe2
-          WHERE pe2.date = p.date AND pe2.ticker = p.ticker
-            AND pe2.model_name = p.model_name AND pe2.horizon = p.horizon) IS NULL
-    THEN NULL
-    ELSE (
-      p.y_pred - (
-        SELECT pe3.y_true FROM prediction_eval pe3
-        WHERE pe3.date = p.date AND pe3.ticker = p.ticker
-          AND pe3.model_name = p.model_name AND pe3.horizon = p.horizon
-      )
-    )
-  END AS y_pred_abs_change,
-  CASE
-    WHEN (
-      SELECT pe4.y_true FROM prediction_eval pe4
-      WHERE pe4.date = p.date AND pe4.ticker = p.ticker
-        AND pe4.model_name = p.model_name AND pe4.horizon = p.horizon
-    ) IS NULL
-    OR (
-      SELECT pe5.y_true FROM prediction_eval pe5
-      WHERE pe5.date = p.date AND pe5.ticker = p.ticker
-        AND pe5.model_name = p.model_name AND pe5.horizon = p.horizon
-    ) = 0
-    THEN NULL
-    ELSE (
-      p.y_pred - (
-        SELECT pe6.y_true FROM prediction_eval pe6
-        WHERE pe6.date = p.date AND pe6.ticker = p.ticker
-          AND pe6.model_name = p.model_name AND pe6.horizon = p.horizon
-      )
-    ) / (
-      SELECT pe7.y_true FROM prediction_eval pe7
-      WHERE pe7.date = p.date AND pe7.ticker = p.ticker
-        AND pe7.model_name = p.model_name AND pe7.horizon = p.horizon
-    )
-  END AS y_pred_pct_change
+  e.y_true,
+  CASE WHEN e.y_true = 0 THEN NULL
+       ELSE (p.y_pred - e.y_true) / e.y_true
+  END AS y_pred_pct_change,
+  (p.y_pred - e.y_true) AS y_pred_abs_change
 FROM predictions p
+JOIN prediction_eval e
+  ON e.ticker = p.ticker
+ AND e.date   = p.date
+ AND e.model_name = p.model_name
+ AND e.horizon    = p.horizon
 WHERE p.model_name LIKE 'safe_%';
 
--- 참고: 위 signals_view는 간단한 self-subquery 버전입니다.
--- 대체로 앱에서 임계값 필터링:
---   SELECT * FROM signals_view
---   WHERE ABS(y_pred_pct_change) >= :theta
---   ORDER BY ABS(y_pred_pct_change) DESC
---   LIMIT :top_n;
-
 -- =====================================================================
--- END OF SCHEMA
+-- END
 -- =====================================================================
