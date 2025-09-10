@@ -20,11 +20,15 @@
     - `prediction_leaderboard`: 모델별 전반 성능 요약  
     - `signals_view`: 예측 변화율 기반 시그널
 
-- **Streamlit App**
-  - 📈 티커별 성능: 실제 vs 예측, 모델 선택, 지표/CSV 다운로드
-  - 🏆 모델 리더보드: `mae_250d` 우선 성능 비교 차트
-  - 🔬 모델 비교: 티커 1개, 모델 2~3개 비교, 최근 250일 토글
-  - 🚨 시그널 보드: 임계값 기반 Top N 시그널 탐지
+- 📊 **Streamlit Web App**
+  - 티커별 성능
+  - 모델 리더보드
+  - 모델 비교
+  - 시그널 보드
+  - ⭐ **관심 종목(Watchlist) [NEW]**
+    - 종목 즐겨찾기 추가/삭제
+    - 관심 종목 목록 표시
+    - 관심 종목 기반 차트 & 시그널 요약
 
 ---
 
@@ -66,12 +70,16 @@ docker exec -i pg-kospi psql -U kospi -d stocks < sql\schema.sql
 🖥️ 앱 실행
 .\.venv\Scripts\python.exe -m streamlit run src/web/app.py
 
+4. Watchlist 사용법
+
+앱에서 ⭐ 관심 종목 탭으로 이동
+종목 선택 → [추가] 버튼으로 등록
+목록/삭제 UI로 관리 가능
+등록된 관심 종목 기반으로 차트 & 시그널 요약 확인 가능
+
 📌 TODO / 발전 방향
 
 워치리스트 기능 (Streamlit + DB)
-
 모델 다양화 (ML/딥러닝 추가)
-
 배포 자동화 (Docker Compose, GitHub Actions)
-
 시각화 고도화 (Superset/Metabase 연동)
