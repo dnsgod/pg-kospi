@@ -32,6 +32,8 @@ psql $DB_URL -f schema.sql
 # 2) 앱 실행
 pip install -r requirements.txt
 streamlit run src/web/app.py
+
+
 🔍 주요 SQL 뷰
 signals_view (예측 기반): prediction_eval에서 LAG(y_pred)로 전일 대비 y_pred_pct_change, y_pred_abs_change 생성.
 → 탭4(임계값 슬라이더) / 탭5(관심종목 요약)에서 사용.
