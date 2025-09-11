@@ -1,19 +1,4 @@
--- =====================================================================
--- KOSPI100 Demo DB Schema (Unified, 2025-09-10)
---  - predictions PK 정렬: (date, ticker, model_name, horizon) ← 코드와 일치
---  - prediction_eval 방향정확도 컬럼: dir_correct BOOLEAN 로 표준화
---  - signals_view: predictions↔prediction_eval 조인 방식으로 단순/명료화
---  - watchlist 테이블(데모용 단일 사용자) 포함
--- =====================================================================
 
--- -----------------------------
--- 0) Extensions (optional)
--- -----------------------------
--- CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
--- -----------------------------
--- 1) Core Tables
--- -----------------------------
 CREATE TABLE IF NOT EXISTS prices (
     date        date    NOT NULL,
     ticker      text    NOT NULL,
@@ -61,6 +46,7 @@ CREATE TABLE IF NOT EXISTS watchlist (
 -- -----------------------------
 CREATE INDEX IF NOT EXISTS idx_prices_date                   ON prices(date);
 CREATE INDEX IF NOT EXISTS idx_prices_ticker                 ON prices(ticker);
+CREATE INDEX IF NOT EXISTS idx_prices_ticker_date ON prices(ticker, date);
 CREATE INDEX IF NOT EXISTS idx_predictions_ticker_date       ON predictions(ticker, date);
 CREATE INDEX IF NOT EXISTS idx_prediction_eval_ticker_date   ON prediction_eval(ticker, date);
 CREATE INDEX IF NOT EXISTS ix_eval_ticker_model_horizon_date
@@ -145,27 +131,73 @@ SELECT
 FROM base
 GROUP BY model_name, horizon;
 
--- C) 시그널 뷰: 예측 vs y_true 변화율/절대변화
+-- C) 시그널 뷰
 DROP VIEW IF EXISTS signals_view CASCADE;
-CREATE VIEW signals_view AS
+CREATE OR REPLACE VIEW signals_view AS
+WITH base AS (
+  -- as-of 기준 예측과 실제가 있는 테이블 활용
+  SELECT
+    date,
+    ticker,
+    model_name,
+    horizon,
+    y_pred,
+    y_true
+  FROM prediction_eval
+),
+lagged AS (
+  SELECT
+    *,
+    LAG(y_pred) OVER (
+      PARTITION BY ticker, model_name, horizon
+      ORDER BY date
+    ) AS prev_pred
+  FROM base
+)
 SELECT
-  p.ticker,
-  p.date,
-  p.model_name,
-  p.horizon,
-  p.y_pred,
-  e.y_true,
-  CASE WHEN e.y_true = 0 THEN NULL
-       ELSE (p.y_pred - e.y_true) / e.y_true
-  END AS y_pred_pct_change,
-  (p.y_pred - e.y_true) AS y_pred_abs_change
-FROM predictions p
-JOIN prediction_eval e
-  ON e.ticker = p.ticker
- AND e.date   = p.date
- AND e.model_name = p.model_name
- AND e.horizon    = p.horizon
-WHERE p.model_name LIKE 'safe_%';
+  date,
+  ticker,
+  model_name,
+  horizon,
+  y_pred,
+  y_true,
+  (y_pred - prev_pred)                               AS y_pred_abs_change,
+  CASE
+    WHEN prev_pred = 0 THEN NULL
+    ELSE (y_pred - prev_pred) / NULLIF(prev_pred, 0)
+  END                                                AS y_pred_pct_change
+FROM lagged
+WHERE prev_pred IS NOT NULL
+ORDER BY ABS((y_pred - prev_pred) / NULLIF(prev_pred, 0)) DESC, date DESC;
+
+CREATE OR REPLACE VIEW signals_ma_view AS
+WITH base AS (
+  SELECT date, ticker, close FROM prices
+),
+ma AS (
+  SELECT
+    date, ticker, close,
+    AVG(close) OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN 4 PRECEDING AND CURRENT ROW)  AS ma5,
+    AVG(close) OVER (PARTITION BY ticker ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS ma20
+  FROM base
+),
+lagged AS (
+  SELECT *, LAG(ma5) OVER (PARTITION BY ticker ORDER BY date) AS prev_ma5,
+           LAG(ma20) OVER (PARTITION BY ticker ORDER BY date) AS prev_ma20
+  FROM ma
+)
+SELECT
+  date, ticker, close, ma5, ma20,
+  CASE WHEN ma5>ma20 AND prev_ma5<=prev_ma20 THEN 'BUY'
+       WHEN ma5<ma20 AND prev_ma5>=prev_ma20 THEN 'SELL'
+       ELSE NULL END AS signal_type,
+  CASE WHEN ma5>ma20 AND prev_ma5<=prev_ma20 THEN 'ma_golden_cross'
+       WHEN ma5<ma20 AND prev_ma5>=prev_ma20 THEN 'ma_dead_cross'
+       ELSE NULL END AS reason
+FROM lagged
+WHERE (ma5>ma20 AND prev_ma5<=prev_ma20)
+   OR (ma5<ma20 AND prev_ma5>=prev_ma20)
+ORDER BY ticker, date;
 
 -- =====================================================================
 -- END

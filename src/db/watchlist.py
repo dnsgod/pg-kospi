@@ -47,7 +47,7 @@ def list_watchlist_df() -> pd.DataFrame:
     - prices 최신 name 하나 조인 (없는 경우 NULL)"""
     eng = get_engine()
     sql = text("""
-        WITH latest_names AS (
+        WITH latest_name AS (
             SELECT DISTINCT ON (ticker) ticker, name
             FROM prices
             ORDER BY ticker, date DESC)
