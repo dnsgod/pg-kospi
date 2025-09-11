@@ -31,7 +31,7 @@ psql $DB_URL -f schema.sql
 
 # 2) 앱 실행
 pip install -r requirements.txt
-streamlit run src/web/app.py
+streamlit run src/web/app.py```
 
 
 🔍 주요 SQL 뷰
