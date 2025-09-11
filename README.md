@@ -25,13 +25,12 @@
   - 오버레이: 탭1 하단 “시그널 오버레이 (MA 골든/데드크로스)”
 
 ## 📦 Quickstart
-```bash
 # 1) DB 스키마 반영
 psql $DB_URL -f schema.sql
 
 # 2) 앱 실행
 pip install -r requirements.txt
-streamlit run src/web/app.py```
+streamlit run src/web/app.py
 
 
 🔍 주요 SQL 뷰
