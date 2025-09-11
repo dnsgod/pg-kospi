@@ -33,7 +33,7 @@ pip install -r requirements.txt
 streamlit run src/web/app.py
 
 
-🔍 주요 SQL 뷰
+### 🔍 주요 SQL 뷰
 signals_view (예측 기반): prediction_eval에서 LAG(y_pred)로 전일 대비 y_pred_pct_change, y_pred_abs_change 생성.
 → 탭4(임계값 슬라이더) / 탭5(관심종목 요약)에서 사용.
 
@@ -42,7 +42,7 @@ signals_ma_view (가격 기반): prices에서 MA5/MA20 윈도우 계산 → 교�
 
 전체 정의는 schema.sql 참고.
 
-🖥️ App 기능 요약
+### 🖥️ App 기능 요약
 탭1: 단일 티커 실제 vs 예측 + MA 시그널 오버레이
 
 탭2: 모델 리더보드 (전체/최근250 기준 MAE/ACC)
@@ -53,14 +53,14 @@ signals_ma_view (가격 기반): prices에서 MA5/MA20 윈도우 계산 → 교�
 
 탭5: 관심 종목 관리(추가/삭제) + 빠른 차트/시그널 요약
 
-🧩 구현 포인트(데이터 엔지니어 관점)
+### 🧩 구현 포인트(데이터 엔지니어 관점)
 가공 책임을 DB(Views)로 이전 → 앱은 소비에 집중 (일관성/성능/테스트 용이)
 
 신호 스키마 분리 (예측 vs 가격) → 의미 충돌 방지, 유지보수 쉬움
 
 인덱스/윈도우 함수 활용 → 대용량에서도 확장성 고려
 
-📸 스크린샷(추가 예정)
+### 📸 스크린샷(추가 예정)
 탭1: Close+MA+BUY/SELL 오버레이 화면
 
 탭4: 임계값 슬라이더와 시그널 리스트
