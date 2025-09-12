@@ -7,6 +7,9 @@ from sqlalchemy import text
 from src.db.conn import get_engine
 from src.db.watchlist import add_watchlist, list_watchlist, list_watchlist_df, remove_watchlist
 import plotly.graph_objects as go
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 
 # 1) 페이지 설정 ---------------------------------------------------------------
 st.set_page_config(page_title="KOSPI100 주가 예측 데모", layout="wide")
@@ -151,9 +154,58 @@ def load_signals_ma(ticker: str, start_date: str | None = None) -> pd.DataFrame:
         df["date"] = pd.to_datetime(df["date"])
     return df
 
-# 4) 탭 구성 -------------------------------------------------------------------
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 티커별 성능", "🏆 모델 리더보드", "🔬 모델 비교", "🚨 시그널 보드", "⭐ 관심 종목"])
+# === [ADD] 250912 ==============================================
+@st.cache_data(ttl=120)
+def load_signal_pred_report(d: str, hz: int, theta: float, topn: int, wl_only: bool) -> pd.DataFrame:
+    """
+    예측 기반 시그널 리포트 (signals_view)
+    - d: 'YYYY-MM-DD' (하루치)
+    - wl_only: True면 watchlist에 있는 티커만
+    """
+    sql = text("""
+        WITH wl AS (SELECT ticker FROM watchlist)
+        SELECT date, ticker, model_name, horizon, y_pred, y_true,
+               y_pred_pct_change, y_pred_abs_change
+        FROM signals_view
+        WHERE date = :d
+          AND horizon = :hz
+          AND ABS(y_pred_pct_change) >= :theta
+          AND (:wl_only = FALSE OR ticker IN (SELECT ticker FROM wl))
+        ORDER BY ABS(y_pred_pct_change) DESC
+        LIMIT :topn
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(sql, conn, params={
+            "d": d, "hz": int(hz), "theta": float(theta),
+            "topn": int(topn), "wl_only": bool(wl_only)
+        })
 
+@st.cache_data(ttl=120)
+def load_signal_ma_report(d: str, topn: int, wl_only: bool) -> pd.DataFrame:
+    """
+    MA 기반 시그널 리포트 (signals_ma_view)
+    - d: 'YYYY-MM-DD' (하루치)
+    - wl_only: True면 watchlist에 있는 티커만
+    """
+    sql = text("""
+        WITH wl AS (SELECT ticker FROM watchlist)
+        SELECT date, ticker, close, ma5, ma20, signal_type, reason
+        FROM signals_ma_view
+        WHERE date = :d
+          AND (:wl_only = FALSE OR ticker IN (SELECT ticker FROM wl))
+        ORDER BY date DESC, ticker
+        LIMIT :topn
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(sql, conn, params={
+            "d": d, "topn": int(topn), "wl_only": bool(wl_only)
+        })
+# === [END ADD] 250912 ================================================================
+
+# 4) 탭 구성 -------------------------------------------------------------------
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📈 티커별 성능", "🏆 모델 리더보드", "🔬 모델 비교", "🚨 시그널 보드", "⭐ 관심 종목", "🧾 시그널 리포트"
+])
 show_recent = st.toggle("최근 1개월 데이터만 보기", value=True)
 
 # ----------------------------- 탭 1: 티커별 성능 ------------------------------
@@ -446,3 +498,68 @@ with tab5:
             mime="text/csv"
         )
 
+
+# --------------------------- 탭 6: 시그널 리포트 -----------------------------
+with tab6:
+    st.subheader("🧾 시그널 요약 리포트 (하루치)")
+
+    today_kst = datetime.now(ZoneInfo("Asia/Seoul")).date()
+    col1, col2, col3, col4, col5 = st.columns([1.3, 1.1, 1.2, 1.3, 1.1])
+
+    with col1:
+        sel_date = st.date_input("날짜", value=today_kst, format="YYYY-MM-DD", key="report_date")
+    with col2:
+        wl_only = st.radio("범위", ["Watchlist", "전체"], horizontal=True) == "Watchlist"
+    with col3:
+        hz = st.selectbox("호라이즌", [1], index=0, help="현재는 D+1만 지원")
+    with col4:
+        theta = st.slider("|예측 변화율| 임계값", 0.0025, 0.05, 0.01, 0.0025, help="signals_view 필터")
+    with col5:
+        topn = st.number_input("Top N", 5, 200, 20, 5)
+
+    query_date = sel_date.strftime("%Y-%m-%d")
+
+    st.markdown("---")
+
+    # (B) 예측 기반 시그널 표 ---------------------------------------------------
+    st.markdown("### 🤖 예측 기반 (signals_view)")
+    pred_df = load_signal_pred_report(query_date, hz=int(hz), theta=float(theta), topn=int(topn), wl_only=bool(wl_only))
+    if pred_df.empty:
+        st.info("선택한 날짜에 예측 기반 시그널이 없습니다.")
+    else:
+        # 보기 좋게 일부 컬럼 정렬/포맷
+        cols_order = ["date","ticker","model_name","horizon","y_pred_pct_change","y_pred_abs_change","y_pred","y_true"]
+        cols_order = [c for c in cols_order if c in pred_df.columns]
+        dfv = pred_df[cols_order].copy()
+        # 퍼센트 포맷(선택)
+        if "y_pred_pct_change" in dfv.columns:
+            try:
+                dfv["y_pred_pct_change"] = (dfv["y_pred_pct_change"].astype(float) * 100).round(2).astype(str) + "%"
+            except Exception:
+                pass
+        st.dataframe(dfv, use_container_width=True)
+        st.download_button(
+            "CSV 다운로드: 예측 기반 시그널",
+            pred_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"signal_pred_{query_date}.csv", mime="text/csv"
+        )
+
+    st.markdown("---")
+
+    # (C) MA 기반 시그널 표 -----------------------------------------------------
+    st.markdown("### 📏 MA 기반 (signals_ma_view)")
+    ma_df = load_signal_ma_report(query_date, topn=int(topn), wl_only=bool(wl_only))
+    if ma_df.empty:
+        st.info("선택한 날짜에 MA 기반 시그널이 없습니다.")
+    else:
+        cols_order = ["date","ticker","signal_type","reason","close","ma5","ma20"]
+        cols_order = [c for c in cols_order if c in ma_df.columns]
+        st.dataframe(ma_df[cols_order], use_container_width=True)
+        st.download_button(
+            "CSV 다운로드: MA 기반 시그널",
+            ma_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"signal_ma_{query_date}.csv", mime="text/csv"
+        )
+
+    # (D) UX 가이드 -------------------------------------------------------------
+    st.caption("※ 예측 기반은 Day2/Day3 파이프라인 실행 후 생성됩니다. 데이터가 없으면 상단 탭의 파이프라인을 먼저 실행하세요.")
