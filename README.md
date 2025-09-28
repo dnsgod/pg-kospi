@@ -102,8 +102,6 @@ AIRFLOW__CORE__FERNET_KEY=<your_fernet_key>
 extra requirements
 PIP_ADDITIONAL_REQUIREMENTS=finance-datareader pykrx statsmodels python-dotenv tensorflow
 
-bash
-코드 복사
 
 ## 설치 & 실행
 
@@ -116,8 +114,6 @@ docker exec -it pg-kospi psql -U kospi -d stocks -f /schema.sql
 스키마에는 PK/Unique 제약 및 필요한 테이블/뷰가 포함됩니다.
 
 2) Airflow 스택 기동
-bash
-코드 복사
 cd airflow
 docker compose up -d --force-recreate
 웹 UI: http://localhost:8080 (기본 계정은 airflow-init에서 생성하도록 compose 구성)
@@ -138,8 +134,6 @@ signals_report_daily: 리포트 CSV 생성(영업일/휴장일 로직 포함)
 스케줄: 평일 06:00 KST (예시)
 
 4) 수동 실행 (빠른 점검용)
-bash
-코드 복사
 # 컨테이너에서 직접
 docker exec -it airflow-airflow-scheduler-1 bash -lc "cd /opt/project && export PYTHONPATH=/opt/project && python -m src.ingest.refresh_tickers"
 docker exec -it airflow-airflow-scheduler-1 bash -lc "cd /opt/project && export PYTHONPATH=/opt/project && python -m src.ingest.incremental_prices"
@@ -149,8 +143,6 @@ docker exec -it airflow-airflow-scheduler-1 bash -lc "cd /opt/project && export 
 DL 속도/리소스가 걱정되면 --limit로 티커 수를 제한해서 테스트하세요.
 
 5) Streamlit 대시보드
-bash
-코드 복사
 # 로컬 가상환경 (DL 설치 포함)에서
 cd C:\Users\user\project
 streamlit run app.py
