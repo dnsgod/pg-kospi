@@ -6,3 +6,6 @@ Finance-DataReader
 pykrx
 statsmodels
 python-dotenv
+tensorflow-cpu>=2.17
+scikit-learn>=1.4
+numpy>=1.26

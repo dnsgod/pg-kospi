@@ -1,0 +1,4 @@
+  File "<string>", line 1
+    from pykrx import stock; import time; print('[1] start portfolio fetch'); t0=time.time(); codes=stock.get_index_portfolio_deposit_file('1028'); print(f'[1] got {len(codes)} tickers in {time.time()-t0:.2f}s'); print('[2] first 5 names timing...'); [print(f'  {i}. {c} - for i,c in enumerate(codes[:5],1)]
+                                                                                                                                                                                                                                                                  ^
+SyntaxError: unterminated f-string literal (detected at line 1)

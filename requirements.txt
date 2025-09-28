@@ -12,3 +12,5 @@ scikit-learn
 matplotlib
 plotly
 streamlit
+tensorflow
+scikit-learn

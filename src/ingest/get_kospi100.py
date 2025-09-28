@@ -1,55 +1,56 @@
+# -*- coding: utf-8 -*-
+"""
+KOSPI100 우주 수집 (티커+이름)
+- 1순위: pykrx 지수 1028 구성종목에서 티커 얻기
+- 이름 매핑: FDR KRX 상장목록으로 일괄 매핑 (빠르고 안정적)
+- 폴백: FDR KRX 상장목록 상위 100개
+"""
+from __future__ import annotations
 from datetime import date, timedelta
-from pykrx import stock
+from typing import List, Tuple
+import pandas as pd
 
-# 여러 방식으로 시도해서 "정확히 100개"를 보장
-_INDEX_NAME_CANDIDATES = ["코스피 100", "코스피100"]
-_INDEX_CODE_CANDIDATES = ["1228", "1029", "1001"]  # 라이브러리/시점에 따라 달라질 수 있어 후보군 시도
+def get_kospi100(today: date | None = None) -> pd.DataFrame:
+    tickers: List[str] = []
+    d = today or date.today()
 
-def _try_fetch(name_or_code: str, d: str):
+    # 1) pykrx에서 티커
     try:
-        return stock.get_index_portfolio_deposit_file(name_or_code, d) or []
+        from pykrx import stock
+        for i in range(5):  # 직전 영업일까지 백오프
+            ds = (d - timedelta(days=i)).strftime("%Y%m%d")
+            try:
+                tickers = stock.get_index_portfolio_deposit_file("1028", ds) or []
+                if tickers:
+                    break
+            except Exception:
+                pass
     except Exception:
-        return []
+        pass
 
-def _find_business_day(yyyymmdd: str) -> str:
-    # 비영업일 대비: 과거로 최대 15일 롤백
-    y, m, d = int(yyyymmdd[:4]), int(yyyymmdd[4:6]), int(yyyymmdd[6:8])
-    cur = date(y, m, d)
-    for _ in range(15):
-        ds = cur.strftime("%Y%m%d")
-        # “코스피 100/코스피100” 이름 우선 시도
-        for nm in _INDEX_NAME_CANDIDATES:
-            if _try_fetch(nm, ds):
-                return ds
-        # 코드도 시도
-        for code in _INDEX_CODE_CANDIDATES:
-            if _try_fetch(code, ds):
-                return ds
-        cur -= timedelta(days=1)
-    return yyyymmdd
+    # 2) 이름 매핑 (FDR KRX)
+    try:
+        import FinanceDataReader as fdr
+        krx = fdr.StockListing("KRX")[["Code", "Name", "Market"]].rename(
+            columns={"Code": "ticker", "Name": "name", "Market": "market"}
+        )
+        krx["ticker"] = krx["ticker"].astype(str).str.zfill(6)
 
-def get_kospi100_tickers(asof: str | None = None) -> list[str]:
-    if asof is None:
-        asof = date.today().strftime("%Y%m%d")
-    asof = _find_business_day(asof)
+        if not tickers:
+            # 폴백: 전체 KRX 중 숫자 6자리만, 상위 100개 사용
+            base = krx[krx["ticker"].str.fullmatch(r"\d{6}")].copy()
+            return base.head(100).reset_index(drop=True)
 
-    # 1) 이름으로 시도 (정확도 높음)
-    for nm in _INDEX_NAME_CANDIDATES:
-        lst = _try_fetch(nm, asof)
-        if len(lst) == 100:
-            return sorted(lst)
+        df = pd.DataFrame({"ticker": tickers})
+        out = df.merge(krx, on="ticker", how="left")
+        # 이름 없으면 임시로 티커 사용
+        out["name"] = out["name"].fillna(out["ticker"])
+        out["market"] = out["market"].fillna("KRX")
+        return out.reset_index(drop=True)
 
-    # 2) 코드로 시도 → 100개면 채택. 200개(코스피200)면 버림.
-    for code in _INDEX_CODE_CANDIDATES:
-        lst = _try_fetch(code, asof)
-        if len(lst) == 100:
-            return sorted(lst)
+    except Exception:
+        # FDR도 실패하면 최소한 티커만이라도 반환
+        return pd.DataFrame({"ticker": tickers, "name": tickers, "market": "KRX"})
 
-    # 3) 마지막 보호장치: 어떤 케이스든 100개 이상이면 상위 100개 슬라이스 (임시 방편)
-    #    *가급적 1,2에서 끝나야 함. 백업 안전망.
-    for nm in _INDEX_NAME_CANDIDATES + _INDEX_CODE_CANDIDATES:
-        lst = _try_fetch(nm, asof)
-        if len(lst) > 100:
-            return sorted(lst)[:100]
-
-    return []
+if __name__ == "__main__":
+    print(get_kospi100().head())
