@@ -1,247 +1,158 @@
-# 📈 KOSPI100 주가 예측 데모 (PostgreSQL + Streamlit)
+# KOSPI Portfolio ETL with Airflow + DL/ML + Streamlit
+
+주식(KOSPI) 데이터를 **매일 자동 수집 → 예측(DL/ML) → 평가 → 리포트 CSV 생성**까지 수행하는 파이프라인입니다.  
+또한 저장된 데이터를 기반으로 **Streamlit 대시보드**에서 시각화를 제공합니다.
+
+## 구성 개요
+
+project/
+├─ airflow/
+│ ├─ dags/
+│ │ └─ airflow_etl_daily.py # DAG: refresh → incremental → predict → eval → report
+│ └─ docker-compose.yml # Airflow 스택
+├─ sql/
+│ └─ schema.sql # DB 스키마 (tickers, prices, predictions, prediction_eval)
+├─ src/
+│ ├─ db/conn.py # DB 엔진 팩토리
+│ ├─ ingest/
+│ │ ├─ refresh_tickers.py # 티커/종목명 갱신
+│ │ └─ incremental_prices.py # 신규 주가만 증분 수집
+│ ├─ models/
+│ │ ├─ baseline_safe.py # MA/SES 안전 예측
+│ │ └─ dl_lstm.py # LSTM 모델 예측(실동작)
+│ └─ pipeline/
+│ ├─ predict_daily.py # 모델 예측 → predictions UPSERT
+│ ├─ ensemble_and_eval.py # 앙상블 + 성능평가 저장
+│ └─ signals_report_daily.py # 리포트 CSV 생성
+├─ app.py # Streamlit 시각화
+├─ requirements.txt
+├─ .env # 환경변수(비공개)
+└─ README.md
+
+perl
+코드 복사
+
+## 주요 테이블/뷰
+
+- **tickers**(ticker PK, name, market, sector, updated_at)
+- **prices**(date, ticker PK, open/high/low/close/volume/change, name)
+- **predictions**(date, ticker, model_name, horizon, y_pred, **PK(date,ticker,model_name,horizon)**)
+- **prediction_eval**(date, ticker, model_name, horizon, y_true, abs_err, dir_correct, **PK(...)**)
+- (선택) **predictions_clean 뷰**: `model_name LIKE 'safe_%' AND horizon=1` 만 노출
+
+## 요구사항
+
+- Docker / Docker Compose
+- Python 3.10+ (개발·로컬 실행용), Airflow 컨테이너 내부 Python 3.12
+- PostgreSQL (Docker 컨테이너 포함)
+- 주요 파이썬 패키지: `apache-airflow==2.9.2`, `sqlalchemy`, `psycopg2`, `pandas`,  
+  `FinanceDataReader`, `pykrx`, `statsmodels`, `tensorflow`(DL), `streamlit`
+
+## 환경변수 (`.env`)
+
+> `.env`는 **커밋 금지**(.gitignore로 제외)  
+> 예시:
+
+Business DB (주가/예측 저장)
+DB_HOST=host.docker.internal
+DB_PORT=5432
+DB_NAME=stocks
+DB_USER=kospi
+DB_PASS=kospi
+DB_URL=postgresql+psycopg2://kospi:kospi@host.docker.internal:5432/stocks
+
+Airflow Metadata DB
+AIRFLOW_DB_HOST=airflow-postgres
+AIRFLOW_DB_PORT=5432
+AIRFLOW_DB_NAME=airflow
+AIRFLOW_DB_USER=airflow
+AIRFLOW_DB_PASS=airflow
+
+AIRFLOW_UID=50000
+AIRFLOW__CORE__LOAD_EXAMPLES=False
+AIRFLOW__CORE__EXECUTOR=LocalExecutor
+TZ=Asia/Seoul
+
+Airflow keys
+AIRFLOW__WEBSERVER__SECRET_KEY=<your_web_secret>
+AIRFLOW__CORE__FERNET_KEY=<your_fernet_key>
+
+extra requirements
+PIP_ADDITIONAL_REQUIREMENTS=finance-datareader pykrx statsmodels python-dotenv tensorflow
+
+bash
+코드 복사
+
+## 설치 & 실행
+
+### 1) DB 스키마 적용
+
+```bash
+# 컨테이너 이름 예: pg-kospi
+docker cp sql/schema.sql pg-kospi:/schema.sql
+docker exec -it pg-kospi psql -U kospi -d stocks -f /schema.sql
+스키마에는 PK/Unique 제약 및 필요한 테이블/뷰가 포함됩니다.
+
+2) Airflow 스택 기동
+bash
+코드 복사
+cd airflow
+docker compose up -d --force-recreate
+웹 UI: http://localhost:8080 (기본 계정은 airflow-init에서 생성하도록 compose 구성)
 
-데이터 엔지니어링 포트폴리오용 미니 프로젝트.  
-- 데이터 적재 → 가공(SQL Views) → 시각화(Streamlit) → 공유(README)까지 **엔드 투 엔드** 흐름을 보여줍니다.
+3) DAG 구조
+DAG ID: airflow_etl_daily
 
-## 🚀 What's New (Day 4: 2025-09-11)
-- **시그널 체계 분리**
-  - 예측 기반: `signals_view` — 모델 `y_pred` 전일 대비 변화율/변화량 계산(탭4/탭5)  
-  - 가격 기반: `signals_ma_view` — MA5/MA20 **골든/데드크로스** 발생일만 `BUY/SELL` (탭1 오버레이)
-- **Streamlit 오버레이 추가 (탭1)**
-  - Close/MA5/MA20 라인 위에 **▲BUY / ▼SELL** 마커 표시
-  - 최근 1개월 토글과 연동된 구간 조회
-- **캐시 최적화**
-  - `@st.cache_data`(15분 기본)로 DB 부하 감소
+refresh_tickers: 코스피200(지수코드 1028) → ticker/이름 갱신 (pykrx, FDR fallback)
 
-## 🧱 아키텍처 (간단)
-- **DB (PostgreSQL)**
-  - 원본: `prices`, 예측: `predictions`, 평가: `prediction_eval`, 관심종목: `watchlist`
-  - 앱 뷰:
-    - `prediction_metrics`, `prediction_leaderboard`
-    - `signals_view` (예측 변화율 기반)  
-    - `signals_ma_view` (MA 교차 기반)
-- **App (Streamlit)**
-  - Tabs: `📈 티커별 성능`, `🏆 리더보드`, `🔬 모델 비교`, `🚨 시그널 보드`, `⭐ 관심 종목`
-  - 오버레이: 탭1 하단 “시그널 오버레이 (MA 골든/데드크로스)”
+incremental_prices: 티커별 DB 마지막 일자 이후만 증분 수집
 
-## 📦 Quickstart
-# 1) DB 스키마 반영
-psql $DB_URL -f schema.sql
+predict_daily: 안전모델(MA/SES) + DL(LSTM) 예측값 저장(upsert)
 
-# 2) 앱 실행
-pip install -r requirements.txt
-streamlit run src/web/app.py
+ensemble_and_eval: 앙상블(safe_ens_mean/median) + 메트릭 저장
 
+signals_report_daily: 리포트 CSV 생성(영업일/휴장일 로직 포함)
 
-### 🔍 주요 SQL 뷰
-signals_view (예측 기반): prediction_eval에서 LAG(y_pred)로 전일 대비 y_pred_pct_change, y_pred_abs_change 생성.
-→ 탭4(임계값 슬라이더) / 탭5(관심종목 요약)에서 사용.
+스케줄: 평일 06:00 KST (예시)
 
-signals_ma_view (가격 기반): prices에서 MA5/MA20 윈도우 계산 → 교차 발생일만 BUY/SELL.
-→ 탭1 오버레이에서 사용.
+4) 수동 실행 (빠른 점검용)
+bash
+코드 복사
+# 컨테이너에서 직접
+docker exec -it airflow-airflow-scheduler-1 bash -lc "cd /opt/project && export PYTHONPATH=/opt/project && python -m src.ingest.refresh_tickers"
+docker exec -it airflow-airflow-scheduler-1 bash -lc "cd /opt/project && export PYTHONPATH=/opt/project && python -m src.ingest.incremental_prices"
+docker exec -it airflow-airflow-scheduler-1 bash -lc "cd /opt/project && export PYTHONPATH=/opt/project && python -m src.pipeline.predict_daily --limit 20"
+docker exec -it airflow-airflow-scheduler-1 bash -lc "cd /opt/project && export PYTHONPATH=/opt/project && python -m src.pipeline.ensemble_and_eval --limit 20"
+docker exec -it airflow-airflow-scheduler-1 bash -lc "cd /opt/project && export PYTHONPATH=/opt/project && python -c 'from src.pipeline.signals_report_daily import run; run()'"
+DL 속도/리소스가 걱정되면 --limit로 티커 수를 제한해서 테스트하세요.
 
-전체 정의는 schema.sql 참고.
+5) Streamlit 대시보드
+bash
+코드 복사
+# 로컬 가상환경 (DL 설치 포함)에서
+cd C:\Users\user\project
+streamlit run app.py
+app.py는 DB와 tickers를 조인해 티커명/모델별 최신 예측/신호를 시각화합니다.
 
-### 🖥️ App 기능 요약
-탭1: 단일 티커 실제 vs 예측 + MA 시그널 오버레이
+내부 쿼리는 predictions_clean(선택적 뷰) 또는 predictions를 사용하도록 설정 가능.
 
-탭2: 모델 리더보드 (전체/최근250 기준 MAE/ACC)
+운영 포인트
+증분 수집: prices에서 티커별 MAX(date)를 읽고 그 다음 영업일부터 API 호출 → 저장
 
-탭3: 모델 비교 (동일 티커, 다중 모델 라인 비교)
+중복 방지: prices PK (date,ticker), predictions PK (date,ticker,model_name,horizon)
+UPSERT(ON CONFLICT … DO UPDATE) 로 재실행 안전
 
-탭4: 시그널 보드 (임계값 |pct| 기준 상위 이벤트)
+휴장일 처리: signals_report_daily.py에서 휴장일/주말 로직으로 적절히 기준일 결정
 
-탭5: 관심 종목 관리(추가/삭제) + 빠른 차트/시그널 요약
+성능: 전체 티커 예측은 시간이 걸릴 수 있음 → 캐시/인덱스/샤딩/배치크기 등 개선 여지
 
-탭6: 시그널 리포트 (예측 vs 가격)
+장애 복구: DB collation 경고는 기능에는 영향 없지만, 동일 OS/locale로 재구성 시 해소 가능
 
-### 🧩 구현 포인트(데이터 엔지니어 관점)
-가공 책임을 DB(Views)로 이전 → 앱은 소비에 집중 (일관성/성능/테스트 용이)
+트러블슈팅 체크리스트
+DB 연결 실패: 컨테이너에서 printenv DB_HOST DB_PORT DB_NAME DB_USER DB_PASS 확인
 
-신호 스키마 분리 (예측 vs 가격) → 의미 충돌 방지, 유지보수 쉬움
+src 모듈 인식 오류: DAG bash_command 에 export PYTHONPATH=/opt/project 포함 여부 확인
 
-인덱스/윈도우 함수 활용 → 대용량에서도 확장성 고려
+ON CONFLICT 에러: predictions의 PK/유니크 인덱스 존재 확인
 
-### 📸 스크린샷(추가 예정)
-탭1: Close+MA+BUY/SELL 오버레이 화면
-
-탭4: 임계값 슬라이더와 시그널 리스트
-
-📝 Changelog
-2025-09-11 (Day 4): 시그널 체계 분리, MA 오버레이/캐시 추가, README 업데이트
-
-2025-09-10 (Day 3): Watchlist/리더보드/평가뷰 정비
-
-🚀 What’s New (2025-09-13) — 데일리 증분 파이프라인
-✅ 신규 스크립트
-
-src/pipeline/ingest_daily.py
-
-목적: DB prices에 **증분(마지막 적재일+1 ~ 오늘)**만 수집·정제·UPSERT
-
-소스: FDR 우선 → 실패/빈DF 시 pykrx 폴백
-
-대상: watchlist가 있으면 우선 사용, 없으면 KOSPI100 전체
-
-멱등성: (ticker, date) ON CONFLICT UPSERT로 여러 번 실행해도 안전
-
-옵션:
-
---since YYYY-MM-DD : 강제 시작일(백필/재처리용)
-
---tickers 005930,000660 : 특정 티커만
-
---dry-run : DB 미쓰기, 계획/품질만 확인
-
-src/pipeline/predict_daily.py
-
-목적: safe_* (MA5/10/20, SES a=0.3/0.5) 다음날 예측 생성 → predictions UPSERT
-
-입력: 최신 prices
-
-출력: predictions(date, ticker, model_name, horizon, y_pred)
-
-src/pipeline/eval_daily.py
-
-목적: as-of 예측을 **다음 거래일 실제값(y_true)**과 매칭 → prediction_eval UPSERT
-
-지표: abs_err, dir_correct (상승/하락 방향 일치 여부)
-
-▶️ 실행 순서 (가상환경 직접 호출 예시: Windows)
-# 0) 스키마가 최신이 아닌 경우만
-psql %DATABASE_URL% -f schema.sql
-
-# 1) 증분 수집 (드라이런 → 실제)
-.\.venv\Scripts\python.exe -m src.pipeline.ingest_daily --dry-run
-.\.venv\Scripts\python.exe -m src.pipeline.ingest_daily
-
-# 2) 데일리 예측
-.\.venv\Scripts\python.exe -m src.pipeline.predict_daily
-
-# 3) 데일리 평가
-.\.venv\Scripts\python.exe -m src.pipeline.eval_daily
-
-# 4) 앱 실행 (이미 설정된 경우 그대로)
-streamlit run src/web/app.py
-
-
-macOS/Linux는 ./.venv/bin/python -m ... 로 바꿔 실행하세요.
-
-🧪 품질/정책 (요약)
-
-중복 (date,ticker) 제거, date 타입 정리, volume < 0 필터
-
-비거래일(주말/공휴일)은 소스에서 빈 DF가 오면 자동 스킵
-
-일부 티커 실패해도 나머지는 계속 진행(티커 루프 단위 예외 처리)
-
-🛠️ 버그 픽스
-
-src/db/watchlist.py: 최신 종목명 CTE 명칭 오타 수정
-
-latest_name → latest_names (LEFT JOIN 대상과 일치)
-
-📊 앱 반영 포인트
-
-탭2/탭3/탭4/탭6는 predictions/prediction_eval/signals_view 갱신을 자동 반영
-
-오늘 파이프라인 실행 후, 리더보드·모델비교·시그널/리포트에서 업데이트 내용 확인 가능
-
-⚠️ 참고(경고 메시지)
-
-pykrx 실행 시 pkg_resources is deprecated 경고는 동작에 영향 없음(무시 가능)
-
-📝 Changelog (append)
-
-2025-09-13: 증분 수집/예측/평가 데일리 파이프라인 추가, watchlist 최신명 조인 수정
-
-2025-09-11 (Day 4): 시그널 체계 분리, MA 오버레이/캐시 추가, README 업데이트
-
-2025-09-10 (Day 3): Watchlist/리더보드/평가뷰 정비
-
-🚀 What’s New (2025-09-13) — 데일리 증분 파이프라인
-✅ 신규 스크립트
-
-src/pipeline/ingest_daily.py
-
-목적: DB prices에 **증분(마지막 적재일+1 ~ 오늘)**만 수집·정제·UPSERT
-
-소스: FDR 우선 → 실패/빈DF 시 pykrx 폴백
-
-대상: watchlist가 있으면 우선 사용, 없으면 KOSPI100 전체
-
-멱등성: (ticker, date) ON CONFLICT UPSERT로 여러 번 실행해도 안전
-
-옵션:
-
---since YYYY-MM-DD : 강제 시작일(백필/재처리용)
-
---tickers 005930,000660 : 특정 티커만
-
---dry-run : DB 미쓰기, 계획/품질만 확인
-
-src/pipeline/predict_daily.py
-
-목적: safe_* (MA5/10/20, SES a=0.3/0.5) 다음날 예측 생성 → predictions UPSERT
-
-입력: 최신 prices
-
-출력: predictions(date, ticker, model_name, horizon, y_pred)
-
-src/pipeline/eval_daily.py
-
-목적: as-of 예측을 **다음 거래일 실제값(y_true)**과 매칭 → prediction_eval UPSERT
-
-지표: abs_err, dir_correct (상승/하락 방향 일치 여부)
-
-▶️ 실행 순서 (가상환경 직접 호출 예시: Windows)
-# 0) 스키마가 최신이 아닌 경우만
-psql %DATABASE_URL% -f schema.sql
-
-# 1) 증분 수집 (드라이런 → 실제)
-.\.venv\Scripts\python.exe -m src.pipeline.ingest_daily --dry-run
-.\.venv\Scripts\python.exe -m src.pipeline.ingest_daily
-
-# 2) 데일리 예측
-.\.venv\Scripts\python.exe -m src.pipeline.predict_daily
-
-# 3) 데일리 평가
-.\.venv\Scripts\python.exe -m src.pipeline.eval_daily
-
-# 4) 앱 실행 (이미 설정된 경우 그대로)
-streamlit run src/web/app.py
-
-
-macOS/Linux는 ./.venv/bin/python -m ... 로 바꿔 실행하세요.
-
-🧪 품질/정책 (요약)
-
-중복 (date,ticker) 제거, date 타입 정리, volume < 0 필터
-
-비거래일(주말/공휴일)은 소스에서 빈 DF가 오면 자동 스킵
-
-일부 티커 실패해도 나머지는 계속 진행(티커 루프 단위 예외 처리)
-
-🛠️ 버그 픽스
-
-src/db/watchlist.py: 최신 종목명 CTE 명칭 오타 수정
-
-latest_name → latest_names (LEFT JOIN 대상과 일치)
-
-📊 앱 반영 포인트
-
-탭2/탭3/탭4/탭6는 predictions/prediction_eval/signals_view 갱신을 자동 반영
-
-오늘 파이프라인 실행 후, 리더보드·모델비교·시그널/리포트에서 업데이트 내용 확인 가능
-
-⚠️ 참고(경고 메시지)
-
-pykrx 실행 시 pkg_resources is deprecated 경고는 동작에 영향 없음(무시 가능)
-
-📝 Changelog (append)
-
-2025-09-13: 증분 수집/예측/평가 데일리 파이프라인 추가, watchlist 최신명 조인 수정
-
-2025-09-11 (Day 4): 시그널 체계 분리, MA 오버레이/캐시 추가, README 업데이트
-
-2025-09-10 (Day 3): Watchlist/리더보드/평가뷰 정비
+DL 에러: tensorflow 설치/런타임 에러 로그 확인, 메모리/버전 호환 체크
