@@ -6,27 +6,49 @@
 ## 구성 개요
 
 project/
+
 ├─ airflow/
+
 │ ├─ dags/
+
 │ │ └─ airflow_etl_daily.py # DAG: refresh → incremental → predict → eval → report
+
 │ └─ docker-compose.yml # Airflow 스택
+
 ├─ sql/
+
 │ └─ schema.sql # DB 스키마 (tickers, prices, predictions, prediction_eval)
+
 ├─ src/
+
 │ ├─ db/conn.py # DB 엔진 팩토리
+
 │ ├─ ingest/
+
 │ │ ├─ refresh_tickers.py # 티커/종목명 갱신
+
 │ │ └─ incremental_prices.py # 신규 주가만 증분 수집
+
 │ ├─ models/
+
 │ │ ├─ baseline_safe.py # MA/SES 안전 예측
+
 │ │ └─ dl_lstm.py # LSTM 모델 예측(실동작)
+
 │ └─ pipeline/
+
 │ ├─ predict_daily.py # 모델 예측 → predictions UPSERT
+
 │ ├─ ensemble_and_eval.py # 앙상블 + 성능평가 저장
+
 │ └─ signals_report_daily.py # 리포트 CSV 생성
+
 ├─ app.py # Streamlit 시각화
+
 ├─ requirements.txt
+
 ├─ .env # 환경변수(비공개)
+
 └─ README.md
 
 perl
