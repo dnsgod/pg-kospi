@@ -7,19 +7,33 @@ KOSPI 주가 데이터를 자동 수집·적재·예측·평가하는 배치 파
 
 # 2️⃣ Architecture
 [Data Source API]
+
         ↓
+        
 [Ingestion]
+
         ↓
+        
 [PostgreSQL (Raw)]
+
         ↓
+        
 [Feature Engineering]
+
         ↓
+        
 [Prediction Model]
+
         ↓
+        
 [Evaluation]
+
         ↓
+        
 [Report CSV]
+
         ↓
+        
 [Streamlit Dashboard]
 
 # 3️⃣ Data Flow
@@ -62,12 +76,14 @@ predictions
 
 prediction_eval
 
+```
 CREATE TABLE predictions (
     ticker VARCHAR(10),
     date DATE,
     predicted_price FLOAT,
     PRIMARY KEY (ticker, date)
 );
+```
 
 # 5️⃣ Automation
 Airflow DAG 기반 배치 실행
@@ -84,6 +100,31 @@ JDBC 드라이버 인식 문제 → 컨테이너 내 드라이버 경로 수정
 DB 연결 타이밍 이슈 → DAG 의존성 재구성
 
 중복 예측 데이터 문제 → upsert 전략 도입
+
+✅ Quickstart (Windows PowerShell)
+
+```
+# 0) 프로젝트 루트로 이동
+cd C:\Users\user\project
+
+# 1) 주가 DB(PostgreSQL: stocks) 기동
+docker compose up -d
+
+# 2) Airflow 기동 (메타DB + webserver/scheduler/triggerer)
+cd .\airflow\
+docker compose -f docker-compose.yaml up -d airflow-postgres
+docker compose -f docker-compose.yaml up -d airflow-init
+docker compose -f docker-compose.yaml up -d
+
+# 3) 상태 확인
+docker ps
+
+# 4) Airflow UI 접속
+# http://localhost:8080  (기본: admin / admin)
+
+# 5) DAG 수동 실행
+# Airflow UI에서 DAG: airflow_etl_daily → ON → Trigger DAG
+```
 
 # 7️⃣ Results
 가격 데이터 적재: 276,738 rows (prices)
