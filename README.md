@@ -70,7 +70,6 @@ CREATE TABLE predictions (
 );
 
 # 5️⃣ Automation
-
 Airflow DAG 기반 배치 실행
 
 ingest → predict → eval → report 의존성 구성
@@ -87,15 +86,18 @@ DB 연결 타이밍 이슈 → DAG 의존성 재구성
 중복 예측 데이터 문제 → upsert 전략 도입
 
 # 7️⃣ Results
+가격 데이터 적재: 276,738 rows (prices)
 
-누적 데이터 N건 관리
+예측 결과 저장: 1,922,525 rows (predictions)
 
-자동화로 반복 수작업 제거
+평가 결과 저장: 1,921,679 rows (prediction_eval)
 
-실행 시간 N초
+Airflow DAG를 통한 end-to-end 실행 검증 완료
+
+<img width="820" height="554" alt="스크린샷 2026-03-01 172447" src="https://github.com/user-attachments/assets/841e8adb-a155-4246-83de-e278655465df" />
+
 
 # 8️⃣ What I Learned
-
 데이터 파이프라인 설계 중요성
 
 자동화와 재현성의 가치
